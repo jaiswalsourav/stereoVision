@@ -1,0 +1,4 @@
+opencv-python>=4.5
+numpy>=1.21
+# Only needed on the Raspberry Pi to drive the PCA9685 servo board:
+# adafruit-circuitpython-servokit
