@@ -1,8 +1,9 @@
 """Locate an object with the stereo cameras and move the robot arm to it.
 
 The arm only moves once the object has been seen at a steady position for
-several frames, then returns home and waits for a cooldown. Press "q" or Esc
-to quit.
+several frames, holds there, returns home and waits for a cooldown. The
+camera view stays live while the arm moves. Press "q" or Esc to stop the
+arm and quit.
 
     python scripts/stereoVisionsecure.py                  # track bottles
     python scripts/stereoVisionsecure.py --object cup --dry-run
@@ -14,17 +15,24 @@ import cv2
 
 import _paths  # noqa: F401  (puts the repo root on sys.path)
 from stereo_vision import rectification
-from stereo_vision.arm import Arm, UnreachableError
+from stereo_vision.arm import Arm, ArmStopped, UnreachableError
 from stereo_vision.cameras import StereoCamera
 from stereo_vision.detection import ObjectDetector
 from stereo_vision.pipeline import annotate, process_frame
 from stereo_vision.tracking import StableTarget
 
 
+def reach_and_return(arm, target, hold_s):
+    angles = arm.reach(target)
+    time.sleep(hold_s)
+    arm.home()
+    return angles
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--object", default="bottle", help="COCO class to pick")
+    parser.add_argument("--object", default="bottle", help="COCO class to reach for")
     parser.add_argument("--dry-run", action="store_true", help="print servo moves only")
     parser.add_argument("--hold", type=float, default=2.0, help="seconds to stay at the target")
     parser.add_argument("--cooldown", type=float, default=3.0, help="seconds before the next move")
@@ -36,11 +44,22 @@ def main():
     arm = Arm(dry_run=args.dry_run)
     arm.home()
     tracker = StableTarget()
-    next_move = 0.0
+    next_move, job = 0.0, None
 
     try:
         while True:
             start = time.time()
+            if job is not None and job.done():
+                if job.error is None:
+                    print("reached:", {k: round(v, 1) for k, v in job.result.items()})
+                elif isinstance(job.error, (UnreachableError, ArmStopped)):
+                    print(f"cannot reach target: {job.error}")
+                else:
+                    raise job.error
+                job = None
+                tracker.reset()
+                next_move = time.time() + args.cooldown
+
             frame_l, frame_r = cams.read()
             if frame_l is None:
                 if cv2.waitKey(500) & 0xFF in (ord("q"), 27):
@@ -49,9 +68,9 @@ def main():
 
             frame_l, frame_r = rectification.rectify(frame_l, frame_r)
             results = process_frame(detector, frame_l, frame_r, [args.object])
-            # Closest matched object is the target.
+            # The closest matched object is the target.
             xyz = min((r[2] for r in results), key=lambda p: p[2]) if results else None
-            target = tracker.update(xyz)
+            target = None if arm.busy else tracker.update(xyz)
 
             fps = 1.0 / max(time.time() - start, 1e-6)
             cv2.imshow("stereo (left | right)", annotate(frame_l, frame_r, results, fps))
@@ -60,16 +79,9 @@ def main():
 
             if target is not None and time.time() >= next_move:
                 print(f"target at x={target[0]:.1f} y={target[1]:.1f} z={target[2]:.1f} cm")
-                try:
-                    angles = arm.reach(target)
-                    print("reached:", {k: round(v, 1) for k, v in angles.items()})
-                    time.sleep(args.hold)
-                    arm.home()
-                except UnreachableError as exc:
-                    print(f"cannot reach target: {exc}")
-                next_move = time.time() + args.cooldown
+                job = arm.start(reach_and_return, arm, target, args.hold)
     finally:
-        arm.home()
+        arm.shutdown()
         cams.release()
         cv2.destroyAllWindows()
 

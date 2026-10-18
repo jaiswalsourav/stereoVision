@@ -52,25 +52,61 @@ MAX_ROW_DIFF_PX = _env("MAX_ROW_DIFF_PX", 40.0, float)
 
 # --- Robot arm -----------------------------------------------------------------------
 ARM_L1_CM = _env("ARM_L1_CM", 25.0, float)  # shoulder -> elbow
-ARM_L2_CM = _env("ARM_L2_CM", 17.0, float)  # elbow -> gripper
-SERVO_BASE = _env("SERVO_BASE", 0, int)
-SERVO_SHOULDER = _env("SERVO_SHOULDER", 1, int)
-SERVO_ELBOW = _env("SERVO_ELBOW", 3, int)
-# Position of the arm's base relative to the left camera, in camera axes
-# (x right, y down, z forward), in cm. Measure this on the real rig.
+ARM_L2_CM = _env("ARM_L2_CM", 17.0, float)  # elbow -> gripper tip
+
+# Each joint is described in "logical" degrees (see stereo_vision/servos.py for
+# the conventions). Per joint, these environment variables override defaults
+# (JOINT is BASE, SHOULDER, ELBOW or GRIPPER):
+#   SERVO_<JOINT>          PCA9685 channel
+#   <JOINT>_MIN_DEG / _MAX_DEG   allowed logical range (safety limits)
+#   <JOINT>_HOME_DEG       home position
+#   <JOINT>_OFFSET_DEG     trim added to the servo command (fixes a horn mounted off by a few degrees)
+#   <JOINT>_INVERTED=1     the servo is mounted mirrored (180 - angle)
+GRIPPER_OPEN_DEG = _env("GRIPPER_OPEN_DEG", 30.0, float)
+GRIPPER_CLOSED_DEG = _env("GRIPPER_CLOSED_DEG", 110.0, float)
+
+
+def _joint(name, channel, home, lo=0.0, hi=180.0):
+    key = name.upper()
+    return {
+        "channel": _env(f"SERVO_{key}", channel, int),
+        "min_deg": _env(f"{key}_MIN_DEG", lo, float),
+        "max_deg": _env(f"{key}_MAX_DEG", hi, float),
+        "home_deg": _env(f"{key}_HOME_DEG", home, float),
+        "offset_deg": _env(f"{key}_OFFSET_DEG", 0.0, float),
+        "inverted": _env(f"{key}_INVERTED", "0") in ("1", "true", "yes"),
+    }
+
+
+JOINTS = {
+    "base": _joint("base", 0, 90.0),
+    "shoulder": _joint("shoulder", 1, 90.0),
+    "elbow": _joint("elbow", 3, 90.0),
+    "gripper": _joint("gripper", 2, GRIPPER_OPEN_DEG),
+}
+# Pulse range of the servos in microseconds (check the servo's datasheet;
+# many hobby servos need 500..2500 to cover the full 180 degrees).
+SERVO_MIN_PULSE_US = _env("SERVO_MIN_PULSE_US", 750, int)
+SERVO_MAX_PULSE_US = _env("SERVO_MAX_PULSE_US", 2250, int)
+
+# Motion: joint speed for normal moves, tip speed for straight-line moves,
+# and how often servo positions are updated.
+ARM_SPEED_DEG_S = _env("ARM_SPEED_DEG_S", 60.0, float)
+ARM_LINEAR_SPEED_CM_S = _env("ARM_LINEAR_SPEED_CM_S", 5.0, float)
+ARM_UPDATE_HZ = _env("ARM_UPDATE_HZ", 50.0, float)
+
+# Camera -> arm transform. If ARM_TRANSFORM_FILE exists (written by the
+# "fit" command of scripts/arm_control.py) it is used. Otherwise the arm's
+# axes are assumed parallel to the left camera's (x right, y down, z forward)
+# with the shoulder joint at ARM_OFFSET_*_CM from the camera.
+ARM_TRANSFORM_FILE = Path(_env("ARM_TRANSFORM_FILE", str(CALIBRATION_DIR / "arm_transform.yml")))
 ARM_OFFSET_CM = (
     _env("ARM_OFFSET_X_CM", 0.0, float),
     _env("ARM_OFFSET_Y_CM", 0.0, float),
     _env("ARM_OFFSET_Z_CM", 0.0, float),
 )
-# Servo speed: degrees per step and delay per step (smaller = gentler).
-SERVO_STEP_DEG = _env("SERVO_STEP_DEG", 2.0, float)
-SERVO_STEP_DELAY_S = _env("SERVO_STEP_DELAY_S", 0.02, float)
 
-# --- Gripper and fruit picking -------------------------------------------------------
-SERVO_GRIPPER = _env("SERVO_GRIPPER", 2, int)
-GRIPPER_OPEN_DEG = _env("GRIPPER_OPEN_DEG", 30.0, float)
-GRIPPER_CLOSED_DEG = _env("GRIPPER_CLOSED_DEG", 110.0, float)
+# --- Fruit picking -----------------------------------------------------------------
 # Fruits the COCO model can detect. A custom model is needed for others.
 FRUIT_CLASSES = ["apple", "orange", "banana"]
 APPROACH_CM = _env("APPROACH_CM", 6.0, float)   # stop this far before the fruit first

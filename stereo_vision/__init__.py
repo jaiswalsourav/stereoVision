@@ -8,7 +8,9 @@ Modules:
     triangulation  depth and 3D position
     pipeline       per-frame detect -> match -> triangulate -> draw
     tracking       waits for a steady target
-    arm            inverse kinematics, servos, gripper, pluck routine
+    kinematics     arm geometry (IK/FK, straight paths) and camera-to-arm transform
+    servos         per-joint servo mapping (trim, direction, limits) and output
+    arm            smooth / straight-line motion, gripper, pluck, background jobs, stop
 
 Calibration itself is a separate tool in stereo_calibration/.
 """

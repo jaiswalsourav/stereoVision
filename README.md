@@ -8,7 +8,7 @@ Detection uses SSD MobileNet v3 trained on COCO, so it recognises 80 everyday
 objects. Depth comes from triangulating the object's position in the left
 and right camera images.
 
-> **Status:** the code is complete and tested without hardware (15 unit tests,
+> **Status:** the code is complete and tested without hardware (31 unit tests,
 > simulated servos, synthetic calibration). It has not yet run on a real camera
 > rig. The committed `stereoMap.xml` comes from an old, failed calibration and
 > must be redone before distances can be trusted. See [Calibration](#calibration).
@@ -22,6 +22,7 @@ and right camera images.
 - [Calibration](#calibration)
 - [Running](#running)
 - [Fruit picking](#fruit-picking)
+- [Robot arm](#robot-arm)
 - [Configuration](#configuration)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
@@ -104,18 +105,18 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 These work with no cameras or servos connected.
 
 ```bash
-# Run the test suite: depth maths, matching, kinematics, the pluck sequence
+# Run the test suite: depth maths, matching, kinematics, arm motion, plucking
 python -m unittest discover tests
 
 # Check the calibration file (the committed one fails, as expected)
 python stereo_calibration/check.py --no-show
 
-# Print the servo angles for plucking a fruit 28 cm ahead, 5 cm up
-python -c "import numpy as np; from stereo_vision.arm import Arm; Arm(dry_run=True).pluck(np.array([0, -5, 28]))"
+# Drive the arm interactively (drop --dry-run once the servo board is connected)
+python scripts/arm_control.py --dry-run
 ```
 
-The live programs need both cameras. Without them they keep printing a
-connection error and waiting.
+The live camera programs need both cameras. Without them they keep printing
+a connection error and waiting. The arm console needs only the servos.
 
 ## Calibration
 
@@ -157,6 +158,7 @@ live window.
 | `python scripts/stereoVisionsecure.py --object bottle --dry-run` | Moves the arm to the closest bottle; `--dry-run` only prints the servo angles. |
 | `python scripts/fruit_picker.py --dry-run` | Fruit picking, printing moves only. |
 | `python scripts/fruit_picker.py --fruits apple --max-picks 3` | Pick up to three apples. |
+| `python scripts/arm_control.py` | Interactive arm console; no cameras needed (see [Robot arm](#robot-arm)). |
 
 Every script accepts `--help`. Object names must match the COCO labels in
 [`models/coco.names`](models/coco.names), for example `bottle`, `cup`,
@@ -168,18 +170,76 @@ Every script accepts `--help`. Object names must match the COCO labels in
 runs this sequence:
 
 1. Open the gripper.
-2. Move to a point 6 cm short of the fruit, then onto it.
+2. Move to a point 6 cm short of the fruit, then **in a straight line** onto it.
 3. Close the gripper.
 4. Wiggle the base ±10° twice to break the stem.
-5. Pull back 8 cm and down 3 cm.
-6. Go home, swing over the basket, release, go home.
+5. Pull back 8 cm and down 3 cm, again in a straight line.
+6. Return the arm home still gripping, swing over the basket, release, go home.
 
-Every pose is checked before the arm starts moving, so a fruit out of reach
-is skipped rather than half-attempted. Servos ramp 2° at a time instead of
-jumping.
+Every pose and every point on the straight lines is checked against the
+joint limits before the arm starts moving, so a fruit out of reach is
+skipped rather than half-attempted. The arm works in the background: the
+camera view stays live, and `q` stops the arm mid-move and parks it.
 
 The COCO model recognises only **apple, orange and banana**. Other fruit,
 such as tomatoes or strawberries, needs a custom-trained detector.
+
+## Robot arm
+
+The arm code is split into three layers:
+
+| Module | Job |
+|--------|-----|
+| [`kinematics.py`](stereo_vision/kinematics.py) | Pure geometry: forward and inverse kinematics within each joint's limits, straight-line paths, and the camera-to-arm transform. |
+| [`servos.py`](stereo_vision/servos.py) | Turns logical joint angles into servo commands, applying each joint's trim, direction and safety limits. |
+| [`arm.py`](stereo_vision/arm.py) | Smooth and straight-line moves, gripper, the pluck routine, background jobs, stop and release. |
+
+**Motion.** All joints in a move start and arrive together, accelerating
+and slowing smoothly, at `ARM_SPEED_DEG_S`. Straight-line moves keep the
+gripper tip on the line at `ARM_LINEAR_SPEED_CM_S`. Any target outside a
+joint's limits is refused before the arm moves.
+
+**Joint angle conventions** (logical angles, before trim and direction):
+
+| Joint | Convention |
+|-------|------------|
+| base | 90° = straight ahead, 0° = right, 180° = left |
+| shoulder | 0° = upper arm horizontal, 90° = straight up |
+| elbow | 180° = forearm in line with the upper arm, smaller = folded |
+| gripper | `GRIPPER_OPEN_DEG` / `GRIPPER_CLOSED_DEG` |
+
+### Setting up a real arm
+
+Use the arm console. It needs no cameras.
+
+```bash
+python scripts/arm_control.py
+```
+
+1. **Home.** Type `home`. Every joint should match the table above. Note
+   that the very first move jumps at full speed, because the servos' starting
+   positions are unknown.
+2. **Fix direction.** If a joint turns the wrong way when you `jog` it, set
+   `<JOINT>_INVERTED=1`, for example `ELBOW_INVERTED=1`.
+3. **Fix trim.** If a joint is a few degrees off at home, set
+   `<JOINT>_OFFSET_DEG`, for example `SHOULDER_OFFSET_DEG=-4`.
+4. **Set safe limits.** If the arm would hit its frame or the table, set
+   `<JOINT>_MIN_DEG` / `<JOINT>_MAX_DEG`.
+5. **Gripper.** Use `grip <deg>` to find a firm-but-gentle closed angle
+   and a fully open one.
+6. **Basket.** Use `joint` and `jog` to put the gripper over the basket,
+   then `where` shows the angles for `DROP_*_DEG`.
+7. **Test.** Try `check 0 -5 28`, then `pluck 0 -5 28`, with an object held
+   in place.
+8. **Camera-to-arm transform** (once cameras work). Put a marker on the
+   gripper tip and move it to 6 or more spread-out positions. At each, read
+   the marker's camera position from `scripts/stereoVision.py` and type
+   `pair <cx> <cy> <cz>`. Then type `fit`. This saves
+   `stereo_calibration/arm_transform.yml`, which replaces `ARM_OFFSET_*_CM`
+   and also handles an arm that is rotated relative to the cameras.
+
+`release` switches the servo signals off so the arm can be moved by hand.
+Type `help` in the console for all commands.
 
 ## Configuration
 
@@ -203,9 +263,11 @@ $env:LEFT_CAMERA="0"; $env:RIGHT_CAMERA="1"; python scripts/stereoVision.py
 | `LEFT_CAMERA`, `RIGHT_CAMERA` | ESP32-CAM URLs | Snapshot URL, or a USB camera index such as `0`. |
 | `BASELINE_CM` | 3.6 | Distance between camera centres. Use the value calibration measures. |
 | `CHESSBOARD_SQUARE_CM` | 2.5 | Size of one printed chessboard square. |
-| `ARM_OFFSET_X_CM`, `_Y_`, `_Z_` | 0, 0, 0 | Shoulder joint position relative to the left camera (x right, y down, z forward). The arm misses until this is measured. |
+| `ARM_OFFSET_X_CM`, `_Y_`, `_Z_` | 0, 0, 0 | Shoulder joint position relative to the left camera (x right, y down, z forward). Not needed once the console's `fit` has saved `arm_transform.yml`. |
 | `GRIPPER_OPEN_DEG`, `GRIPPER_CLOSED_DEG` | 30, 110 | Set the closed angle to grip firmly without crushing. |
 | `DROP_BASE_DEG`, `DROP_SHOULDER_DEG`, `DROP_ELBOW_DEG` | 170, 90, 90 | Arm pose above the basket. |
+| `<JOINT>_INVERTED`, `<JOINT>_OFFSET_DEG` | 0, 0 | Per joint (`BASE`, `SHOULDER`, `ELBOW`, `GRIPPER`): mirrored servo, and trim in degrees. |
+| `<JOINT>_MIN_DEG`, `<JOINT>_MAX_DEG` | 0, 180 | Per joint safety limits. |
 
 **Tuning**
 
@@ -216,14 +278,14 @@ $env:LEFT_CAMERA="0"; $env:RIGHT_CAMERA="1"; python scripts/stereoVision.py
 | `MAX_ROW_DIFF_PX` | 40 | How far apart (vertically) a left/right match may be. |
 | `ARM_L1_CM`, `ARM_L2_CM` | 25, 17 | Arm link lengths. |
 | `SERVO_BASE`, `_SHOULDER`, `_ELBOW`, `_GRIPPER` | 0, 1, 3, 2 | PCA9685 channels. |
+| `<JOINT>_HOME_DEG` | 90 (gripper: open) | Home angle per joint. |
+| `SERVO_MIN_PULSE_US`, `SERVO_MAX_PULSE_US` | 750, 2250 | Servo pulse range. Many hobby servos need 500, 2500 for a full 180°. |
+| `ARM_SPEED_DEG_S` | 60 | Joint speed. |
+| `ARM_LINEAR_SPEED_CM_S` | 5 | Gripper speed on straight-line moves. |
+| `ARM_UPDATE_HZ` | 50 | How often servo positions are updated during a move. |
 | `APPROACH_CM`, `PULL_BACK_CM`, `PULL_DOWN_CM` | 6, 8, 3 | Plucking motion. |
 | `TWIST_DEG`, `TWIST_COUNT` | 10, 2 | Stem-breaking wiggle. |
-| `SERVO_STEP_DEG`, `SERVO_STEP_DELAY_S` | 2, 0.02 | Servo speed. |
 | `CAMERA_TIMEOUT_S` | 3 | How long to wait for a camera frame. |
-
-Servo angle conventions (which way is 0° and 180° for each joint) are
-described at the top of [`stereo_vision/arm.py`](stereo_vision/arm.py). If a
-servo is mounted mirrored, adjust it there.
 
 ## Project layout
 
@@ -237,7 +299,8 @@ stereoVision/
 ├── scripts/                  programs you run
 │   ├── stereoVision.py           live object distance
 │   ├── stereoVisionsecure.py     distance + move the arm
-│   └── fruit_picker.py           detect fruit and pluck it
+│   ├── fruit_picker.py           detect fruit and pluck it
+│   └── arm_control.py            interactive arm console (no cameras)
 ├── stereo_vision/            library code
 │   ├── config.py                 all settings
 │   ├── cameras.py                HTTP or USB cameras
@@ -246,7 +309,9 @@ stereoVision/
 │   ├── triangulation.py          depth and 3D position
 │   ├── pipeline.py               detect → match → triangulate → draw
 │   ├── tracking.py               waits for a steady target
-│   └── arm.py                    kinematics, servos, gripper, pluck
+│   ├── kinematics.py             arm geometry and camera-to-arm transform
+│   ├── servos.py                 per-joint servo mapping and output
+│   └── arm.py                    motion, gripper, pluck, stop
 ├── models/                   SSD MobileNet v3 (COCO) + best.tflite
 ├── tests/                    unit tests, no hardware needed
 ├── docs/                     screenshots
@@ -266,8 +331,12 @@ stereoVision/
 | Images look curved, rotated or half black | The calibration is bad. Run `check.py`, then recapture and recalibrate. |
 | "TRACKING LOST" although the object is visible | It must be found in **both** views. Lower `CONF_THRESHOLD`, improve lighting, or check calibration (rows misaligned beyond `MAX_ROW_DIFF_PX`). |
 | Distances are consistently too large or small | Wrong `BASELINE_CM`, or left and right cameras swapped. |
-| `cannot reach target` | The object is outside the arm's 8–42 cm reach or needs a servo past 0–180°. Move the object or the arm. |
-| Arm goes to the wrong place | `ARM_OFFSET_*_CM` is not measured, or a servo is mirrored. |
+| `cannot reach target` / `outside the joint limits` | The object is outside the arm's 8–42 cm reach, or needs a joint past its limits. Move the object or the arm, or widen `<JOINT>_MIN_DEG` / `_MAX_DEG` if it is safe. |
+| A joint turns the wrong way | Set `<JOINT>_INVERTED=1`. |
+| A joint is a few degrees off | Set `<JOINT>_OFFSET_DEG`. |
+| Servos don't cover the full 180° | Widen `SERVO_MIN_PULSE_US` / `SERVO_MAX_PULSE_US`, for example 500 and 2500. |
+| Arm goes to the wrong place | The camera-to-arm transform is not measured. Use `pair` and `fit` in the arm console. |
+| `arm position unknown; call home() first` | Straight-line moves need a known starting pose. Run `home` first, and again after `release`. |
 | `servo board unavailable; running dry` | ServoKit not installed, or I²C not enabled on the Pi (`sudo raspi-config` → Interface Options → I2C). |
 
 ## Limitations and ideas
@@ -280,8 +349,9 @@ stereoVision/
   stream, would fix this and raise the frame rate.
 - Depth uses the configured field of view rather than the focal length
   stored by calibration.
-- The camera-to-arm transform is a translation only; the arm's axes are
-  assumed parallel to the camera's.
-- The video freezes while the arm moves.
+- The servos give no position feedback, so the first move after start-up
+  or `release` jumps at full speed, and a jammed joint goes unnoticed.
+- There is no wrist joint, so the gripper's angle at the fruit follows from
+  where the fruit is.
 - Only three fruits are recognised. A custom-trained model (the
   `best.tflite` format would suit a Raspberry Pi) would widen this.

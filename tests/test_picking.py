@@ -1,4 +1,4 @@
-"""Tests for fruit plucking: motion planning and the servo sequence.
+"""Tests for fruit plucking: motion planning, the servo sequence, target choice.
 
     python -m unittest discover tests
 """
@@ -9,41 +9,17 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+from fakes import make_arm  # noqa: E402
+from fruit_picker import choose_fruit  # noqa: E402
 from stereo_vision import config  # noqa: E402
-from stereo_vision.arm import (Arm, UnreachableError, forward_kinematics,  # noqa: E402
-                               plan_pluck)
+from stereo_vision.arm import UnreachableError, forward_kinematics, plan_pluck  # noqa: E402
 from stereo_vision.detection import Detection  # noqa: E402
+from stereo_vision.kinematics import CameraToArm  # noqa: E402
 from stereo_vision.tracking import StableTarget  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from fruit_picker import choose_fruit  # noqa: E402
-
-
-class FakeServo:
-    def __init__(self, log, channel):
-        self.log, self.channel = log, channel
-
-    @property
-    def angle(self):
-        return None
-
-    @angle.setter
-    def angle(self, value):
-        assert 0.0 <= value <= 180.0, value
-        self.log.append((self.channel, value))
-
-
-class FakeKit:
-    def __init__(self):
-        self.log = []
-        self.servo = [FakeServo(self.log, ch) for ch in range(16)]
-
-
-def make_arm():
-    arm = Arm(dry_run=True, settle_s=0, step_delay_s=0)
-    arm.kit = FakeKit()
-    return arm
+FRUIT = np.array([0.0, -5.0, 28.0])
 
 
 class PlanTest(unittest.TestCase):
@@ -65,42 +41,63 @@ class PlanTest(unittest.TestCase):
 
 class SequenceTest(unittest.TestCase):
     def test_pluck_sequence(self):
-        arm = make_arm()
-        arm.pluck(np.array([0.0, -5.0, 28.0]))
-        grip = [v for ch, v in arm.kit.log if ch == config.SERVO_GRIPPER]
-        # opens, closes on the fruit, opens again over the basket
-        self.assertEqual(grip[0], config.GRIPPER_OPEN_DEG)
-        self.assertIn(config.GRIPPER_CLOSED_DEG, grip)
-        self.assertEqual(grip[-1], config.GRIPPER_OPEN_DEG)
-        closed_at = arm.kit.log.index((config.SERVO_GRIPPER, config.GRIPPER_CLOSED_DEG))
-        base_after_grip = [v for ch, v in arm.kit.log[closed_at:] if ch == config.SERVO_BASE]
-        self.assertIn(config.DROP_POSE["base"], base_after_grip)  # visits the basket
-        self.assertEqual(arm.current["base"], 90.0)               # ends at home
+        arm, kit = make_arm(transform=CameraToArm())
+        arm.home()
+        kit.log.clear()
+        arm.pluck(FRUIT)
+        ch = {n: j.channel for n, j in arm.joints.items()}
+        grip = kit.angles(ch["gripper"])
+        closed = [i for i, a in enumerate(grip) if abs(a - config.GRIPPER_CLOSED_DEG) < 1e-9]
+        self.assertTrue(closed, "gripper never closed")
+        self.assertAlmostEqual(grip[-1], config.GRIPPER_OPEN_DEG)  # released at the end
+        # The gripper stays closed from grabbing until over the basket.
+        closed_at = kit.log.index((ch["gripper"], config.GRIPPER_CLOSED_DEG))
+        after = kit.log[closed_at:]
+        reopen = next(i for i, (c, v) in enumerate(after)
+                      if c == ch["gripper"] and v < config.GRIPPER_CLOSED_DEG)
+        bases_while_closed = [v for c, v in after[:reopen] if c == ch["base"]]
+        self.assertAlmostEqual(bases_while_closed[-1], config.DROP_POSE["base"])
+        self.assertEqual(arm.pose["base"], 90.0)  # ends at home
 
     def test_unreachable_does_not_move(self):
-        arm = make_arm()
+        arm, kit = make_arm(transform=CameraToArm())
+        arm.home()
+        kit.log.clear()
         with self.assertRaises(UnreachableError):
             arm.pluck(np.array([0.0, 0.0, 80.0]))
-        self.assertEqual(arm.kit.log, [])
+        self.assertEqual(kit.log, [])
 
-    def test_moves_are_ramped(self):
-        arm = make_arm()
-        arm.move({"base": 90.0})
-        arm.kit.log.clear()
-        arm.move({"base": 150.0})
-        steps = [v for _, v in arm.kit.log]
-        self.assertGreater(len(steps), 10)
-        self.assertLessEqual(max(np.diff([90.0] + steps)), config.SERVO_STEP_DEG + 1e-9)
+    def test_approach_is_straight(self):
+        arm, kit = make_arm(transform=CameraToArm())
+        arm.home()
+        plan = plan_pluck(FRUIT)
+        arm.move_joints(plan["approach"])
+        start = arm.position()
+        tips = []
+        original = arm._send
+
+        def record(frame):
+            original(frame)
+            tips.append(arm.position())
+        arm._send = record
+        arm.move_linear(FRUIT)
+        line = FRUIT - start
+        for tip in tips:  # distance of every intermediate tip position from the line
+            offset = (tip - start) - line * np.dot(tip - start, line) / np.dot(line, line)
+            self.assertLess(np.linalg.norm(offset), 1e-6)
+        np.testing.assert_allclose(tips[-1], FRUIT, atol=1e-6)
 
 
 class ChooseFruitTest(unittest.TestCase):
     def test_picks_closest_reachable(self):
-        far = (Detection("apple", 0.9, (0, 0, 10, 10)), None, np.array([0.0, 0.0, 90.0]))
-        near = (Detection("orange", 0.8, (0, 0, 10, 10)), None, np.array([0.0, -5.0, 28.0]))
-        too_close = (Detection("apple", 0.9, (0, 0, 10, 10)), None, np.array([0.0, 0.0, 3.0]))
-        det, xyz = choose_fruit([far, too_close, near])
-        self.assertEqual(det.class_name, "orange")
-        self.assertIsNone(choose_fruit([far]))
+        arm, _ = make_arm(transform=CameraToArm())
+        det = lambda name: Detection(name, 0.9, (0, 0, 10, 10))  # noqa: E731
+        far = (det("apple"), None, np.array([0.0, 0.0, 90.0]))
+        near = (det("orange"), None, FRUIT)
+        too_close = (det("apple"), None, np.array([0.0, 0.0, 3.0]))
+        chosen, _ = choose_fruit([far, too_close, near], arm)
+        self.assertEqual(chosen.class_name, "orange")
+        self.assertIsNone(choose_fruit([far], arm))
 
 
 class StableTargetTest(unittest.TestCase):
