@@ -2,7 +2,10 @@
 
 Show a printed 9x6 chessboard to both cameras. Press "s" to save a pair
 (only saved when the board is visible in both views), Esc or "q" to quit.
-Aim for 15-30 pairs covering different positions, angles and distances.
+Aim for 20-30 pairs covering different positions, angles and distances.
+Images go to stereo_calibration/images/left and images/right.
+
+    python stereo_calibration/capture.py
 """
 import argparse
 

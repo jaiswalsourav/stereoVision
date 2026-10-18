@@ -1,4 +1,8 @@
-"""Undistort and rectify stereo frames using the maps in stereoMap.xml."""
+"""Undistort and rectify stereo frames at runtime.
+
+Only loads and applies stereo_calibration/stereoMap.xml. Producing that file
+is the job of the separate stereo_calibration/ tool.
+"""
 import cv2
 
 from . import config
@@ -7,11 +11,10 @@ _maps = None
 
 
 def load_maps(path=config.STEREO_MAP_FILE):
-    """Load the rectification maps written by stereo_calibration.py."""
+    """Load the rectification maps written by stereo_calibration/calibrate.py."""
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run scripts/calibration_images.py and "
-            "scripts/stereo_calibration.py first."
+            f"{path} not found. Calibrate first: see stereo_calibration/README.md"
         )
     fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
     maps = {name: fs.getNode(name).mat() for name in

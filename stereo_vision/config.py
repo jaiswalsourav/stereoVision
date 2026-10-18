@@ -8,7 +8,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # repository root
 MODELS_DIR = BASE_DIR / "models"
-CALIBRATION_DIR = BASE_DIR / "calibration"
+CALIBRATION_DIR = BASE_DIR / "stereo_calibration"
 
 
 def _env(name, default, cast=str):
@@ -29,10 +29,15 @@ BASELINE_CM = _env("BASELINE_CM", 3.6, float)   # distance between the cameras
 FOV_H_DEG = _env("FOV_H_DEG", 65.0, float)      # horizontal field of view
 
 # --- Files -------------------------------------------------------------------------
-STEREO_MAP_FILE = Path(_env("STEREO_MAP_FILE", str(CALIBRATION_DIR / "stereoMap.xml")))
-CALIB_DIR = Path(_env("CALIB_DIR", str(CALIBRATION_DIR / "images")))
-CALIB_LEFT_DIR = CALIB_DIR / "stereoLeft"
-CALIB_RIGHT_DIR = CALIB_DIR / "stereoRight"
+# Stereo calibration (see stereo_calibration/README.md). Override the folder with
+# CALIBRATION_OUT to keep several calibrations side by side.
+CALIB_OUT_DIR = Path(_env("CALIBRATION_OUT", str(CALIBRATION_DIR)))
+STEREO_MAP_FILE = Path(_env("STEREO_MAP_FILE", str(CALIB_OUT_DIR / "stereoMap.xml")))
+LEFT_INTRINSICS_FILE = CALIB_OUT_DIR / "left_camera.yml"
+RIGHT_INTRINSICS_FILE = CALIB_OUT_DIR / "right_camera.yml"
+CALIB_DIR = Path(_env("CALIB_DIR", str(CALIB_OUT_DIR / "images")))
+CALIB_LEFT_DIR = CALIB_DIR / "left"
+CALIB_RIGHT_DIR = CALIB_DIR / "right"
 CHESSBOARD_SIZE = (9, 6)  # inner corners per row, per column
 CHESSBOARD_SQUARE_CM = _env("CHESSBOARD_SQUARE_CM", 2.5, float)
 
@@ -58,3 +63,24 @@ ARM_OFFSET_CM = (
     _env("ARM_OFFSET_Y_CM", 0.0, float),
     _env("ARM_OFFSET_Z_CM", 0.0, float),
 )
+# Servo speed: degrees per step and delay per step (smaller = gentler).
+SERVO_STEP_DEG = _env("SERVO_STEP_DEG", 2.0, float)
+SERVO_STEP_DELAY_S = _env("SERVO_STEP_DELAY_S", 0.02, float)
+
+# --- Gripper and fruit picking -------------------------------------------------------
+SERVO_GRIPPER = _env("SERVO_GRIPPER", 2, int)
+GRIPPER_OPEN_DEG = _env("GRIPPER_OPEN_DEG", 30.0, float)
+GRIPPER_CLOSED_DEG = _env("GRIPPER_CLOSED_DEG", 110.0, float)
+# Fruits the COCO model can detect. A custom model is needed for others.
+FRUIT_CLASSES = ["apple", "orange", "banana"]
+APPROACH_CM = _env("APPROACH_CM", 6.0, float)   # stop this far before the fruit first
+PULL_BACK_CM = _env("PULL_BACK_CM", 8.0, float)  # pull back this far to detach it
+PULL_DOWN_CM = _env("PULL_DOWN_CM", 3.0, float)  # and this far down
+TWIST_DEG = _env("TWIST_DEG", 10.0, float)       # base wiggle while gripping
+TWIST_COUNT = _env("TWIST_COUNT", 2, int)
+# Servo angles (base, shoulder, elbow) above the basket where fruit is dropped.
+DROP_POSE = {
+    "base": _env("DROP_BASE_DEG", 170.0, float),
+    "shoulder": _env("DROP_SHOULDER_DEG", 90.0, float),
+    "elbow": _env("DROP_ELBOW_DEG", 90.0, float),
+}

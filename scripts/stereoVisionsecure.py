@@ -11,36 +11,14 @@ import argparse
 import time
 
 import cv2
-import numpy as np
 
 import _paths  # noqa: F401  (puts the repo root on sys.path)
-from stereo_vision import calibration
+from stereo_vision import rectification
 from stereo_vision.arm import Arm, UnreachableError
 from stereo_vision.cameras import StereoCamera
 from stereo_vision.detection import ObjectDetector
 from stereo_vision.pipeline import annotate, process_frame
-
-
-class StableTarget:
-    """Accepts a target once it has stayed within `tolerance` for `frames` frames."""
-
-    def __init__(self, frames=5, tolerance_cm=2.0):
-        self.frames = frames
-        self.tolerance = tolerance_cm
-        self.history = []
-
-    def update(self, xyz):
-        if xyz is None:
-            self.history.clear()
-            return None
-        if self.history and np.linalg.norm(xyz - self.history[-1]) > self.tolerance:
-            self.history.clear()
-        self.history.append(xyz)
-        if len(self.history) >= self.frames:
-            target = np.mean(self.history, axis=0)
-            self.history.clear()
-            return target
-        return None
+from stereo_vision.tracking import StableTarget
 
 
 def main():
@@ -54,7 +32,7 @@ def main():
 
     detector = ObjectDetector()
     cams = StereoCamera()
-    calibration.load_maps()
+    rectification.load_maps()
     arm = Arm(dry_run=args.dry_run)
     arm.home()
     tracker = StableTarget()
@@ -69,7 +47,7 @@ def main():
                     break
                 continue
 
-            frame_l, frame_r = calibration.rectify(frame_l, frame_r)
+            frame_l, frame_r = rectification.rectify(frame_l, frame_r)
             results = process_frame(detector, frame_l, frame_r, [args.object])
             # Closest matched object is the target.
             xyz = min((r[2] for r in results), key=lambda p: p[2]) if results else None

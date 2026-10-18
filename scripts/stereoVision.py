@@ -13,7 +13,7 @@ import time
 import cv2
 
 import _paths  # noqa: F401  (puts the repo root on sys.path)
-from stereo_vision import calibration, config
+from stereo_vision import config, rectification
 from stereo_vision.cameras import StereoCamera
 from stereo_vision.detection import ObjectDetector
 from stereo_vision.pipeline import annotate, process_frame
@@ -30,7 +30,7 @@ def main():
 
     detector = ObjectDetector()
     cams = StereoCamera(args.left, args.right)
-    calibration.load_maps()  # fail early if calibration is missing
+    rectification.load_maps()  # fail early if calibration is missing
 
     try:
         while True:
@@ -41,7 +41,7 @@ def main():
                     break
                 continue
 
-            frame_l, frame_r = calibration.rectify(frame_l, frame_r)
+            frame_l, frame_r = rectification.rectify(frame_l, frame_r)
             results = process_frame(detector, frame_l, frame_r, args.objects)
             for dl, _, xyz in results:
                 print(f"{dl.class_name}: x={xyz[0]:.1f} y={xyz[1]:.1f} z={xyz[2]:.1f} cm")
